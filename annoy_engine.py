@@ -1,51 +1,49 @@
-from weaviate import Client
 import librosa
+import numpy as np
+from annoy import AnnoyIndex
 
-# Step 1: Connect to Weaviate instance
-client = Client("http://localhost:8080")
+def load_songs(song_paths):
+    """Load songs from the given paths and extract features to create song vectors."""
+    song_vectors = []
+    for path in song_paths:
+        y, sr = librosa.load(path)
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr)
+        spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
+        song_vector = np.concatenate(([tempo], np.mean(mfcc, axis=1), np.mean(spectral_centroid, axis=1)))
+        song_vectors.append(song_vector)
+    return song_vectors
 
-# Step 2: Define schema
-schema = {
-    "classes": [
-        {
-            "class": "Song",
-            "properties": [
-                {"name": "title", "dataType": ["string"], "indexInverted": True},
-                {"name": "features", "dataType": ["number[]"]},
-            ],
-        }
-    ]
-}
-client.schema.create(schema)
+def build_index(song_vectors):
+    """Build an Annoy index for the given song vectors."""
+    vector_dimension = len(song_vectors[0])
+    index = AnnoyIndex(vector_dimension, 'angular')
+    for i, vec in enumerate(song_vectors):
+        index.add_item(i, vec)
+    index.build(2)
+    return index
 
-# Step 3: Import data
-def extract_features(file_path):
-    y, sr = librosa.load(file_path)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr)
-    return mfcc.mean(axis=1).tolist()
+def recommend_songs(index, song_vectors, song_paths, listened_songs_indices, num_neighbors=5):
+    """Recommend songs based on the centroid of listened songs using the Annoy index."""
+    listened_vectors = [song_vectors[i] for i in listened_songs_indices]
+    centroid = np.mean(listened_vectors, axis=0)
+    similar_indices = index.get_nns_by_vector(centroid, num_neighbors + len(listened_songs_indices))
+    recommended_indices = [i for i in similar_indices if i not in listened_songs_indices][:num_neighbors]
+    return [song_paths[i] for i in recommended_indices]
 
-songs = [
-    {"title": "Song 1", "file_path": "song1.wav"},
-    {"title": "Song 2", "file_path": "song2.wav"},
-    {"title": "Song 3", "file_path": "song3.wav"},
+# List of paths to song files
+song_paths = [
+    'music/Daylight.wav', 'music/Die.wav','music/ECHO.wav', 'music/Enigma.wav', 'music/Golden_Age.wav', 'music/JAWS.wav',
+    'music/MOMENTUM.wav', 'music/Night_Fever.wav', 'music/Rave.wav', 'music/Speedy_Boy.wav', 'music/Tek.wav', 'music/Wir.wav',
 ]
 
-for song in songs:
-    features = extract_features(song["file_path"])
-    client.data_object.create({"title": song["title"], "features": features}, "Song")
+# Load songs and build Annoy index
+song_vectors = load_songs(song_paths)
+index = build_index(song_vectors)
 
-# Step 4: Query for recommendations
-def recommend_songs(features, num_recommendations=3):
-    query = {
-        "query": {
-            "vector": features,
-            "k": num_recommendations,
-        }
-    }
-    results = client.query.raw_get("Song", query)
-    return [hit["_source"]["title"] for hit in results["hits"]]
+# Example usage: Recommend songs based on a list of listened songs
+listened_songs_indices = [1]
+playlist = recommend_songs(index, song_vectors, song_paths, listened_songs_indices, num_neighbors=3)
+print("Playlist:", playlist)
 
-# Example usage
-listened_song_features = extract_features("song1.wav")
-recommended_songs = recommend_songs(listened_song_features)
-print("Recommended songs:", recommended_songs)
+#print(len(song_vectors[0]))
